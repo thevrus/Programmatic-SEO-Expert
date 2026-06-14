@@ -52,15 +52,16 @@ for url in "$@"; do
   echo "════════════════════════════════════════════════════════════"
 
   suspect_csr=0
-  google_words=0
 
   for entry in "${UAS[@]}"; do
     name="${entry%%|*}"
     ua="${entry#*|}"
 
-    body="$(curl -sS -L --max-time 30 -A "$ua" "$url" 2>/dev/null)"
-    meta="$(curl -sS -L --max-time 30 -A "$ua" -o /dev/null \
-              -w '%{http_code} %{time_total}s %{size_download}bytes' "$url" 2>/dev/null)"
+    # One fetch per agent: body followed by a metadata trailer line (no second request).
+    resp="$(curl -sS -L --max-time 30 -A "$ua" \
+              -w '\n__META__ %{http_code} %{time_total}s %{size_download}bytes' "$url" 2>/dev/null)"
+    meta="${resp##*__META__ }"
+    body="${resp%$'\n'__META__*}"
 
     words="$(printf '%s' "$body" | strip_to_words)"
     if printf '%s' "$body" | grep -qiE 'application/ld\+json'; then
@@ -71,20 +72,17 @@ for url in "$@"; do
 
     printf '  %-10s %s | words:%s | json-ld:%s\n' "$name" "$meta" "$words" "$jsonld"
 
-    [[ "$name" == "Googlebot" ]] && google_words="$words"
-    if [[ "$name" == "GPTBot" || "$name" == "ClaudeBot" ]]; then
-      if [[ "$words" -lt "$MIN_WORDS" ]]; then
-        suspect_csr=1
-      fi
+    if [[ "$name" == "GPTBot" || "$name" == "ClaudeBot" ]] && [[ "$words" -lt "$MIN_WORDS" ]]; then
+      suspect_csr=1
     fi
   done
 
-  # Heuristic: AI bots see far less text than Googlebot's raw fetch, or near-empty shell.
+  # Heuristic: if JS-blind AI bots see a near-empty shell, the page is likely CSR.
   if [[ "$suspect_csr" -eq 1 ]]; then
     echo "  ⚠️  LIKELY CLIENT-SIDE RENDERED — AI crawlers see <${MIN_WORDS} words of content."
     echo "      Fix: SSR/SSG/ISR so content, links, and JSON-LD are in the initial HTML."
     overall_rc=1
-  elif [[ "$google_words" -gt 0 && "$words" -gt 0 ]]; then
+  else
     echo "  ✓ Content appears present in raw HTML for AI crawlers."
   fi
   echo
